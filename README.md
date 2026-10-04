@@ -13,6 +13,27 @@ Design, full report and attribution: [`tools/dsv41/`](https://github.com/berthol
 Clean-room: the model math is re-implemented from DeepSeek's MIT inference code and tech report; no code from other
 DeepSeek-V4.1 recipes or kits was read or copied ([ATTRIBUTION.md](https://github.com/bertholomus/TensorFold/blob/deepseek-v41-tp2/tools/dsv41/ATTRIBUTION.md)).
 
+## v0.3 (2026-10-04): what changed, measured against v0.2
+
+The same release suite, run on the served lane for both builds (v0.2 = engine `08cae28`, v0.3 = `bbaa6cd`), same client
+(`tools/dsv41/kit_bench.py`), same prompts, greedy, DSpark drafting. Median of 3 unless noted.
+
+- **Single stream, 384 tokens (set b):** code **81.9 → 86.0 tok/s (+5%)**, prose 49.0 → 53.2 (+9%), structured
+  113.1 → 119.4 (+6%)
+- **Single stream, 512 tokens:** code 71.2 → 72.7 (+2%), prose 44.4 → 45.6 (+3%), structured 82.6 → 87.9 (+6%)
+- **4 concurrent streams, 384 tokens, total tokens / wall clock:** **93.0 → 99.4 tok/s (+7%)**; 9-rep median 93.7 → 99.5
+- **2 concurrent streams, 384 tokens:** 64.5 → 68.2 tok/s (+6%)
+- **4 streams sustained** (4 always in flight for 90 s): **104.4 → 107.5 tok/s (+3%)**, per-stream p50 31.6 → 32.4
+- **Prompt speed:** unchanged (8K–128K 1,739–1,984 tok/s)
+- **Still exact:** v0.3 replies are bit-identical to v0.2's (12/12); drafted == serial 8/8; concurrent == solo 12/12
+  burst and 12/12 staggered; images 6/6; needles 12/12 at 8K–250K.
+
+Where it came from: less per-row overhead in the 1-row forward, all bit-identical. hc_post is fused into the next
+hc_pre, the router and indexer row matmuls are smaller, the rotations and RoPE run in neighbouring kernels' epilogues,
+and the indexer and compressor glue is fused. Kernels per 1-row forward: 2,387 → ~990. Every switch defaults on
+(`TF_DS_HC_FUSED`, `TF_DS_ROWMM2`, `TF_DS_ROUND_GLUE`, `TF_DS_ROT_*`, `TF_DS_INDEXER_FUSED`, `TF_DS_COMP_FUSED`,
+`TF_DS_TRITON_PDL`); set one to `0` to turn it off.
+
 ## v0.2 (2026-10-04): what changed, measured against v0.1.0
 
 Same nodes, same public client (`tools/dsv41/kit_bench.py`), same prompts and same method as v0.1.0. Greedy decode,
