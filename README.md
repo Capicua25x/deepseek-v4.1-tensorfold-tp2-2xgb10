@@ -13,6 +13,34 @@ Design, full report and attribution: [`tools/dsv41/`](https://github.com/berthol
 Clean-room: the model math is re-implemented from DeepSeek's MIT inference code and tech report; no code from other
 DeepSeek-V4.1 recipes or kits was read or copied ([ATTRIBUTION.md](https://github.com/bertholomus/TensorFold/blob/deepseek-v41-tp2/tools/dsv41/ATTRIBUTION.md)).
 
+## v0.4 (2026-10-05): single stream past 100 tok/s, measured against v0.3
+
+The same release suite, run on the served lane for both builds (v0.3 = engine `bbaa6cd`, v0.4 = `bd0024d`), same client
+(`tools/dsv41/kit_bench.py`), same prompts, greedy, DSpark drafting. Median of 3 unless noted.
+
+- **Single stream, 384 tokens (set b):** code **86.0 → 101.1 tok/s (+18%)** (reps 101.13 / 101.14 / 101.18), prose
+  53.2 → 62.5 (+18%), structured **119.4 → 142.4 (+19%)**
+- **Single stream, 512 tokens:** code 72.7 → 88.9 (+22%), prose 45.6 → 57.5 (+26%), structured 87.9 → 106.9 (+22%)
+- **4 concurrent streams, 384 tokens, total tokens / wall clock:** **99.4 → 112.5 tok/s (+13%)**; 9-rep median 112.1
+- **2 concurrent streams, 384 tokens:** 68.2 → 79.4 tok/s (+16%)
+- **4 streams sustained** (4 always in flight for 90 s): **107.5 → 124.5 tok/s (+16%)**, per-stream p50 37.6, first
+  token p50 0.20 s
+- **Decode after a 128K prompt:** 59.9 → 89.2 tok/s (+49%)
+- **Prompt speed:** level (8K / 32K / 64K / 128K 1,944 / 1,977 / 1,897 / 1,732 tok/s)
+- **Start to ready:** 36 s (warm restart)
+- **Still exact:** v0.4 replies are bit-identical to v0.3's (12/12); drafted == serial; concurrent == solo 12/12 burst
+  and 12/12 staggered; images 6/6; needles 12/12 at 8K–250K. Same weights and bits, same 262K window, same KV cache.
+
+Where it came from, all bit-identical and each behind a switch (set it to `0` for the old path):
+- Paced L2 prefetch: a side stream pulls the next kernels' weights into L2 (`TF_DS_L2_PREFETCH`).
+- Drafter: our own tensor-core vocabulary dot per rank (bit-equal to cuBLAS on all 129,280 rows), one small argmax
+  gather, cached bias rows for the 256 most frequent tokens; drafter pass 5.1 → ~3.3 ms.
+- Verify forward: dead fp32 scratch dropped from L2, multi-row router as per-chunk sums, split mHC finish on a side
+  stream, split q/kv rotations, register-resident attention merge, fused indexer top-k; 6-row forward 39.5 → ~36.8 ms.
+- Host path: Engram reads by Linux AIO (O_DIRECT), one pinned copy per round, drafter rows absorbed behind the forward.
+- Cross-node gathers: rings and flags in registered memory, one fence per staging block; ~2.9 → ~1.9 ms a round.
+Details in the commit message and `tools/dsv41/REPORT.md`.
+
 ## v0.3 (2026-10-04): what changed, measured against v0.2
 
 The same release suite, run on the served lane for both builds (v0.2 = engine `08cae28`, v0.3 = `bbaa6cd`), same client
