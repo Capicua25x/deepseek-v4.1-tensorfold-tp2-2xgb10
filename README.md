@@ -96,7 +96,10 @@ tokens (an earlier build found a needle at 1,039,833 tokens); start to ready 65 
 ## Run it
 
 Two GB10 nodes with a direct RoCE link. On each node, a throwaway `nvcr.io/nvidia/pytorch:26.07-py3` container with
-the `deepseek-v41-tp2` branch installed (`pip install -e`). Start rank 1 (worker) first, then rank 0 (head):
+the `deepseek-v41-tp2` branch installed (`pip install -e`). Start rank 0 (head) first — it owns the TCPStore master
+(`comm.py: is_master = rank == 0`) — then wait for its store port to LISTEN (default `29551`) before starting rank 1
+(worker). A fixed sleep races on a cold start: rank 0 dies with `DistStoreError: Timed out … 1/2 clients joined` and
+rank 1 with `NCCL error 6` at `nccl.barrier()`:
 
 ```
 TF_DS_REPLAY=1 TF_DS_PREFILL_CHUNK=2048 TF_DS_RANK_CACHE=<CACHE_DIR> TF_DS_RANK_CACHE_READERS=32 \
