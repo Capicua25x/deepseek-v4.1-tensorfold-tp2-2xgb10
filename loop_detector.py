@@ -54,7 +54,7 @@ class NoveltyGuard:
     def feed(self, text: str) -> bool:
         """Add streamed reasoning text; return True the first time a loop is sentenced."""
         if not text or self.detected:
-            return self.detected
+            return False        # transition-only: True once, on the call that sentences it
         self._pending.append(text)
         self.total_chars += len(text)
         buf = "".join(self._pending)
