@@ -13,6 +13,39 @@ Design, full report and attribution: [`tools/dsv41/`](https://github.com/berthol
 Clean-room: the model math is re-implemented from DeepSeek's MIT inference code and tech report; no code from other
 DeepSeek-V4.1 recipes or kits was read or copied ([ATTRIBUTION.md](https://github.com/bertholomus/TensorFold/blob/deepseek-v41-tp2/tools/dsv41/ATTRIBUTION.md)).
 
+## v0.5 (2026-10-07): 1M context on the shipped configuration, faster long prompts, measured against v0.4
+
+Decode and prefill are what we worked on this time. The same release suite on the served lane for both builds
+(v0.4 = engine `bd0024d` at `--context 262144`, v0.5 = `808eb4a` at `--context 1048576`), same client
+(`tools/dsv41/kit_bench.py`), same prompts, greedy, DSpark drafting. Median of 3 unless noted.
+
+- **Context window: 262,144 → 1,048,576 tokens** with `--parallel 4`. Needles found to 1M on this configuration;
+  four long streams together give the same replies as each one alone.
+- **Decode after a 128K prompt:** **89.2 → 128.7 tok/s (+44%)**
+- **Prompt speed:** 8K **1,944 → 2,125 (+9%)**, 32K **1,977 → 2,189 (+11%)**, 64K **1,897 → 2,123 (+12%)**, 128K
+  **1,732 → 2,004 (+16%)** tok/s
+- **Level:** single stream set b code / prose / structured 101.1 / 62.5 / 142.4 → 100.5 / 62.5 / 140.0; 4 streams
+  112.5 → 112.4 (9-rep median 112.1 → 112.4); 4 streams sustained 124.5 → 125.1
+- **Still exact:** v0.5 replies are bit-identical to v0.4.1's on every gate (== reference 12/12, drafted == serial,
+  concurrent == solo 12/12 burst and 12/12 staggered, images 6/6). Same weights and bits, same KV cache.
+- **1M qualifier (this build, this config):** needles 3/3 to 1,039,836 tokens; 4 x 160K streams concurrent == solo 5/5; memory floor 6.44 / 5.44 GiB.
+
+Where it came from, all bit-identical: RoPE tables at the context length (cos/sin only) and one shared logits buffer
+for the round graphs pay for the 1M window; exact pruned top-k for the long-context indexer, candidate-only reindexing
+and tile skipping in deep decode; prompt chunks' grouped expert launches walk a work list built on the device; kept
+prompts shrink to a boundary instead of being dropped. The engine is now on upstream TensorFold 0.6.6.
+Details in the engine commit message and `tools/dsv41/REPORT.md`.
+
+## v0.4.1 (2026-10-05): fix, no speed change
+
+Engine `d5d7bb3` on top of v0.4's `bd0024d`. The Engram read-ahead now claims its slot by index. Before, `list.remove()`
+compared id arrays of other lengths and could stop the server on long, prefix-cached agent sessions (present since
+v0.2). One file changed; replies and speed rows are unchanged. If you run v0.4, update to this.
+
+> **Context window, v0.1.0–v0.4.1:** the serve command below and our served lane run `--context 262144`. Earlier text
+> here said "window up to 1,048,576": that is the engine's limit, which one earlier build tested with a single needle,
+> not the configuration these releases were measured and shipped with.
+
 ## v0.4 (2026-10-05): single stream past 100 tok/s, measured against v0.3
 
 The same release suite, run on the served lane for both builds (v0.3 = engine `bbaa6cd`, v0.4 = `bd0024d`), same client
@@ -90,8 +123,8 @@ for prompt chunks; a faster weight-cache read and a shorter warm-up. Details in 
 ## v0.1.0 (2026-10-04, first release)
 
 Single stream 512 tokens code / prose / structured 60.5 / 38.0 / 74.5 tok/s (set b 69.9 / 42.3 / 96.5); 4 streams
-73.2–80.5 tok/s; prefill 1,247–1,365 tok/s at 8K–128K; decode after a 128K prompt 61.8 tok/s; window up to 1,048,576
-tokens (an earlier build found a needle at 1,039,833 tokens); start to ready 65 s.
+73.2–80.5 tok/s; prefill 1,247–1,365 tok/s at 8K–128K; decode after a 128K prompt 61.8 tok/s; served window 262,144
+tokens (the engine accepts up to 1,048,576; an earlier build found one needle at 1,039,833 tokens); start to ready 65 s.
 
 ## Run it
 
@@ -103,14 +136,16 @@ TF_DS_REPLAY=1 TF_DS_PREFILL_CHUNK=2048 TF_DS_RANK_CACHE=<CACHE_DIR> TF_DS_RANK_
 TF_DS_WARM_LENGTHS=1,17,33,131,514,1024,2113 \
 NCCL_IB_HCA=<HCA_PORT_0>,<HCA_PORT_1> NCCL_IB_GID_INDEX=5 NCCL_SOCKET_IFNAME=<IFACE> \
 tensorfold serve <MODEL_DIR> --tp 2 --rank R --master <HEAD_IP> --host 127.0.0.1 --port 18891 \
-  --context 262144 --vision --parallel 4 --mtp-drafts 5 --temperature 0
+  --context 1048576 --vision --parallel 4 --mtp-drafts 5 --temperature 0
 ```
 
 - `<MODEL_DIR>`: the Mia-AiLab EXL3 checkpoint. Engram tables: `TF_DS_ENGRAM=<ENGRAM_DIR>` (DeepSeek's original shards
   47/48), or a folder next to `<MODEL_DIR>` whose name contains "Engram".
 - `NCCL_IB_HCA` lists both RoCE ports when both are cabled (prompt-chunk gathers 153 → 106 ms); one port works too.
 - `TF_DS_RANK_CACHE` keeps each rank's weights in one file (~106 GB a rank, written on the first start).
-- `--context` up to 1048576. `TF_API_KEY_FILE=<file>` makes every route but `/health` require a key.
+- `--context 1048576` is the measured, served window from v0.5 (v0.1.0–v0.4.1 ran 262144).
+- `TF_RDMA_DEVICES=<HCA_PORT_0>,<HCA_PORT_1>` names the RoCE ports of the link between the two nodes when a node has
+  more active ports than that link (the RDMA gather needs the same device count on every rank). `TF_API_KEY_FILE=<file>` makes every route but `/health` require a key.
 - Benchmark: `python3 tools/dsv41/kit_bench.py --base http://127.0.0.1:18891 --model <name> decode|concurrent|sustained|prefill|depth`
 - Quality: `python3 tools/dsv41/quality_eval.py --base http://127.0.0.1:18891 --model <name> --mmlu <MMLU_TEST_PARQUET> \
   --gsm8k <GSM8K_TEST_JSONL> --max-tokens-on 4096` (MMLU "all" test from cais/mmlu, GSM8K test from openai/grade-school-math)
